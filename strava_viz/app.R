@@ -26,7 +26,8 @@ client_secret = Sys.getenv("CLIENT_SECRET")
 replace_null<-function(x){
     return(ifelse(is.null(x),NA,x))
 }
-
+# source the horizontal legend function
+source('horizontal_legend.R')
 header <- dashboardHeader(title = "Enhanced Strava Visualization"
 )
 sidebar <- dashboardSidebar(disable=TRUE
@@ -44,7 +45,7 @@ body<-dashboardBody(
                        selectInput("series_choice", "Choose Color-code:",
                                    choices = c("Pace (min/mile)" = "moving_minutes_per_mile",
                                                "Cadence" = "average_cadence",
-                                               #"Heartrate" = "average_heartrate",
+                                               "Average Heartrate" = "average_heartrate",
                                                "Suffer Score" = "suffer_score"),
                                    selected = "Pace (min/mile)"),
                        box(
@@ -65,7 +66,12 @@ body<-dashboardBody(
                             plotOutput('single_run')
                             ),
                         box(width=12,
-                            leafletOutput('map'))
+                            leafletOutput('map'),
+                            absolutePanel(
+                                bottom = 0, left = 0, width="225px",
+                                uiOutput("map_legend")
+                            )
+                        )
                )
     
 )))
@@ -103,7 +109,13 @@ server <- function(input, output, session) {
             #return(TRUE)
             print("authenticated")
         }else{
-            shinyjs::runjs(paste0('window.location.href = "http://www.strava.com/oauth/authorize?client_id=78033&response_type=code&redirect_uri=https://dkori.shinyapps.io/strava_viz/&approval_prompt=force&scope=activity:read";'))
+            # define the redirect url based on if its running locally or not
+            if(reactiveValuesToList(session$clientData)[['url_hostname']]=='127.0.0.1'){
+                redirect_url<-paste0('http://127.0.0.1:',reactiveValuesToList(session$clientData)[['url_port']])
+            }else{
+                redirect_url<-'https://dkori.shinyapps.io/strava_viz/'
+            }
+            shinyjs::runjs(paste0('window.location.href = "http://www.strava.com/oauth/authorize?client_id=78033&response_type=code&redirect_uri=',redirect_url,'&approval_prompt=force&scope=activity:read";'))
         }
     })
     # 
@@ -225,17 +237,19 @@ server <- function(input, output, session) {
        return(run_ids)
        })
    # observer to populate the series_choice box for the athlete overview page
-   observeEvent(runs_frame(),{
-       series_options<-c("Pace (min/mile)" = "moving_minutes_per_mile",
-                              "Cadence" = "average_cadence",
-                              #"Heartrate" = "average_heartrate",
-                              "Suffer Score" = "suffer_score")
+   observeEvent(runs_frame,{
        # add heartrate as an option to series options if the user has heartrate info for at least one run
-       if('average_heartrate' %in% names(runs_frame())){
-           series_options[['Average Heartrate']]<-"average_heartrate"
+       if(length(runs_frame()[['average_heartrate']])<2){
+           print(names(runs_frame))
+           series_options<-c("Pace (min/mile)" = "moving_minutes_per_mile",
+                             "Cadence" = "average_cadence",
+                             #"Heartrate" = "average_heartrate",
+                             "Suffer Score" = "suffer_score")
+           updateSelectInput(session,"series_choice",choices = series_options,selected="Pace (min/mile)")
        }
-       updateSelectInput(session,"series_choice",choices = series_options,selected="Pace (min/mile)")
+       
                 })
+   
    # observer to update the input box choices to choose a run
    observeEvent(run_list,
                 updateSelectInput(session, "run_choice", choices=run_list(),selected=names(run_list)[[1]])
@@ -333,6 +347,14 @@ server <- function(input, output, session) {
        #min_stream<-5
        #max_stream<-15
        pal<-colorNumeric("viridis",domain = c(min_stream,max_stream))
+       # quick rounding function for popup
+       roundif<-function(num){
+           if(is.na(num)){
+               return(str(num))
+           }else{
+               return(str(round(num)))
+           }
+       }
        leaflet()%>%
            clearGroup('run')%>%
            addProviderTiles(providers$CartoDB.Positron)%>%
@@ -350,6 +372,19 @@ server <- function(input, output, session) {
                      opacity = 1,
                      group="legend")
    })
+   # at some point, figure out enough javascript to make the horizontal legend function work
+   # output$map_legend<-renderUI({
+   #     min_stream<-min(run_sf()[['pace_roll']],na.rm=TRUE)
+   #     max_stream<-max(run_sf()[['pace_roll']],na.rm=TRUE)
+   # 
+   #     pal<-colorNumeric("viridis",domain = c(min_stream,max_stream))
+   #     horizontal_legend(values=run_sf()[['pace_roll']],
+   #                       palette='viridis',
+   #                       title='pace</br>(min/mile)',
+   #                       left_label=round(min_stream),
+   #                       right_label=round(max_stream))
+   # })
+
 
 
     

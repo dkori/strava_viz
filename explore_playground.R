@@ -7,7 +7,7 @@ library(sf)
 library(leaflet)
 'http://www.strava.com/oauth/authorize?client_id=78033&response_type=code&redirect_uri=http://localhost/exchange_token&approval_prompt=force&scope=activity:read'
 'http://www.strava.com/oauth/authorize?client_id=78033&response_type=code&redirect_uri=https://dkori.shinyapps.io/strava_viz/&approval_prompt=force&scope=activity:read'
-'http://www.strava.com/oauth/authorize?client_id=78033&response_type=code&redirect_uri=http://127.0.0.1:6312&approval_prompt=force&scope=activity:read'
+'http://www.strava.com/oauth/authorize?client_id=78033&response_type=code&redirect_uri=http://127.0.0.1:3565&approval_prompt=force&scope=activity:read'
 # readRenviron(".Renviron")
 client_secret = Sys.getenv("CLIENT_SECRET")
 
