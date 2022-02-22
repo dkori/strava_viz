@@ -1,0 +1,12 @@
+name: strava_viz
+title: strava_viz
+username:
+account: dkori
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 5693387
+bundleId: 5604104
+url: https://dkori.shinyapps.io/strava_viz/
+when: 1645496610.44053
+asMultiple: FALSE
+asStatic: FALSE
