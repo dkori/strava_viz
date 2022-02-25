@@ -5,8 +5,8 @@ account: dkori
 server: shinyapps.io
 hostUrl: https://api.shinyapps.io/v1
 appId: 5693387
-bundleId: 5608138
+bundleId: 5617876
 url: https://dkori.shinyapps.io/strava_viz/
-when: 1645591190.71687
+when: 1645804103.658
 asMultiple: FALSE
 asStatic: FALSE

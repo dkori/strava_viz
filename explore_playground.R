@@ -5,14 +5,14 @@ library(ggplot2)
 library(scales)
 library(sf)
 library(leaflet)
+library(stats)
 'http://www.strava.com/oauth/authorize?client_id=78033&response_type=code&redirect_uri=http://localhost/exchange_token&approval_prompt=force&scope=activity:read'
 'http://www.strava.com/oauth/authorize?client_id=78033&response_type=code&redirect_uri=https://dkori.shinyapps.io/strava_viz/&approval_prompt=force&scope=activity:read'
 'http://www.strava.com/oauth/authorize?client_id=78033&response_type=code&redirect_uri=http://127.0.0.1:3565&approval_prompt=force&scope=activity:read'
 # readRenviron(".Renviron")
-client_secret = Sys.getenv("CLIENT_SECRET")
-
+#client_secret = Sys.getenv("CLIENT_SECRET")
 client_id='78033'
-code='8e51321ff2ef9f6a9c88e601b20b6cb4ebfa7d1'
+code='493b5b9250fd902164ec18028bdaa943f4e2141c'
 grant_type='authorization_code'
 post_auth_url = paste0('https://www.strava.com/oauth/token?client_id=',
                        client_id,
@@ -79,7 +79,7 @@ replace_null<-function(x){
 ifelse(is.null(activity[['average_cadence']]),NA,activity[['average_cadence']])
 activity<-test[1]
 run_frame = bind_rows(
-                           lapply(activity_list,extract_run))%>%
+                           lapply(activity_list,function(x)extract_activity(x,'Run')))%>%
   mutate(distance_miles = distance_km/1.609344,
          moving_minutes_per_mile = moving_time/60/distance_miles,
          elapsed_minutes_per_mile = elapsed_time/60/distance_miles)
@@ -112,6 +112,7 @@ get_stream = function(activity_id,stream_type){
 time_stream = content(get_stream(last_id,'time'))
 altitude_stream = content(get_stream(last_id,'altitude'))
 coord_stream<- content(get_stream(last_id,'latlng'))
+heart_stream<-content(get_stream(last_id,'heartrate'))
 test = cbind(t(time_stream$distance$data),
              t(time_stream$time$data))
 # turn stream into dataframe
@@ -128,6 +129,25 @@ stream_frame <- data.frame('distance'=sapply(time_stream$distance$data,c),
     pace = (distance_change*0.0372823/time_change)^(-1),
     altitude_change = altitude-lag(altitude),
     altitude_per_time=altitude_change/time_change)
+# create a function that limits the frame to only rows in the time window, 
+timeroll<-function(i,df,roll_var,time_var='time', time_range=10){
+  # extract the time for that value of the given roll_var
+  time<-df[i,][['time']]
+  # limit df to just rows within time range
+  temp_df<-df[df[[time_var]]>=time-time_range & df[[time_var]]<=time+time_range,]
+  # return the change in variable over change in time
+  return(weighted.mean(temp_df[[roll_var]],temp_df[['time_change']],na.rm=TRUE))
+}
+time<-stream_frame[1,][['distance']]
+timeroll(1,stream_frame,'pace')
+stream_frame$distance_roll<-sapply(1:nrow(stream_frame),
+                                  function(x) timeroll(x,stream_frame,'distance_change'))
+stream_frame$altitude_roll<-sapply(1:nrow(stream_frame),
+                                  function(x) timeroll(x,stream_frame,'altitude_per_time'))
+stream_frame$pace_roll<-sapply(1:nrow(stream_frame),
+                                   function(x) timeroll(x,stream_frame,'pace'))
+
+
 min_graph_pace=5
 max_graph_pace=15
 smoothing = 50
@@ -135,7 +155,7 @@ stream_frame%>%
   filter(pace<15)%>%
   ggplot(aes(x=miles))+
   geom_point(aes(x=miles,y=pace,color=altitude_per_time),alpha=.3)+
-  geom_line(aes(y=rollmean(pace,smoothing,na.pad=TRUE),color=altitude_per_time,x=miles),size=1)+
+  geom_line(aes(y=pace_roll,color=altitude_per_time,x=miles),size=1)+
   theme_minimal()+
   scale_color_viridis_c(option='inferno')+
   scale_y_continuous(limits=c(min_graph_pace,max_graph_pace*1.1),oob = rescale_none)+

@@ -62,6 +62,13 @@ body<-dashboardBody(
                tabPanel('Run Focus',
                         selectInput("run_choice","Choose Run:",
                                     choices=NULL,selected=NULL),
+                        selectInput("series_choice2", "Choose Color-code:",
+                                    choices = c("Pace (min/mile)" = "pace",
+                                                "Cadence" = "cadence",
+                                                "Heartrate" = "heartrate",
+                                                "Vertical climb (m/s)" = "climb"),
+                                    selected = "climb"
+                                    ),
                         box(width=12,
                             plotOutput('single_run')
                             ),
@@ -207,6 +214,10 @@ server <- function(input, output, session) {
     #output$runs_over_time<-reactive({paste(runs_frame()$name,collapse=', ')})
     # plot the user's runs over time
     series_choice<-reactive({paste0(input$series_choice)})
+    pal_dict<-c("moving_minutes_per_mile" = "viridis",
+                "suffer_score"="cividis",
+                "average_cadence"="plasma",
+                "average_heartrate"="magma")
     output$runs_over_time<-renderPlot({
         if(token_received()){
             # get the date range
@@ -236,7 +247,7 @@ server <- function(input, output, session) {
                       legend.position='bottom',
                       legend.key.width = unit(2, 'cm'),
                       legend.title = element_text(colour="white", size=14))+
-                scale_color_viridis_c()+
+                scale_color_viridis_c(option=pal_dict[[input$series_choice]])+
                 labs(x='',y='distance (miles)',color=names(input$series_choice),
                      title =paste0(athlete_name(),': All Runs\n',
                                    min_date,' to ',max_date))
@@ -248,7 +259,7 @@ server <- function(input, output, session) {
         }
     },bg='transparent')
     # a vector of all run ids and that will be passed to the run selector
-   run_list<-reactive({
+   run_list<-eventReactive(runs_frame,{
        if(token_received()){
            run_names<-runs_frame()%>%
                # create a miles field with the word "miles" in it
@@ -271,6 +282,7 @@ server <- function(input, output, session) {
                                  "Suffer Score" = "suffer_score")
                updateSelectInput(session,"series_choice",choices = series_options,selected="Pace (min/mile)")
        }})
+
    
    # observer to update the input box choices to choose a run
    observeEvent(run_list,
@@ -279,7 +291,7 @@ server <- function(input, output, session) {
        )
    
    # retrieve run stream data for selected run
-   stream_frame<-eventReactive(c(input$run_choice,token_received),{
+   stream_frame<-eventReactive(input$run_choice,{
        if(token_received()){
            get_stream = function(activity_id,stream_type){
                stream_url = paste0('https://www.strava.com/api/v3/activities/',
@@ -291,14 +303,16 @@ server <- function(input, output, session) {
            # get the time stream
            time_stream = content(get_stream(input$run_choice,'time'))
            altitude_stream = content(get_stream(input$run_choice,'altitude'))
-           coord_stream<- reactive({content(get_stream(input$run_choice,'latlng'))})
-           
+           coord_stream<- content(get_stream(input$run_choice,'latlng'))
+           heart_stream<- content(get_stream(input$run_choice,'heartrate'))
+           cadence_stream<- content(get_stream(input$run_choice,'cadence'))
            #heart_stream = content(get_stream(input$run_choice,'heartrate'))
            # turn stream into dataframe
            stream_frame_temp <- data.frame('distance'=sapply(time_stream$distance$data,c),
                                            'time' = sapply(time_stream$time$data,c),
-                                           'altitude'=sapply(altitude_stream$altitude$data,c))%>%
-               # convert to miles, minutes, calculate diffs
+                                           'altitude' = sapply(altitude_stream$altitude$data,c),
+                                           'cadence' = sapply(cadence_stream$cadence$data,c))%>%
+               # # convert to miles, minutes, calculate diffs
                mutate(miles = distance/1609.344,
                       miles_round = round(miles,2),
                       distance_change = distance-lag(distance),
@@ -307,35 +321,88 @@ server <- function(input, output, session) {
                       time_change = time-lag(time),
                       pace = (distance_change*0.0372823/time_change)^(-1),
                       altitude_change = altitude-lag(altitude),
-                      altitude_per_time=altitude_change/time_change)%>%
-               cbind(lapply(coord_stream()$latlng$data,
+                      climb=altitude_change/time_change)%>%
+               cbind(lapply(coord_stream$latlng$data,
                             function(x) data.frame(lng=as.double(x[[2]]),lat=as.double(x[[1]])))%>%bind_rows())
+           # if heartrate data is available for the run, 
+           if(heart_stream$heartrate$original_size==nrow(stream_frame_temp)){
+               stream_frame_temp$heartrate<-sapply(heart_stream$heartrate$data,c)
+           }
            return(stream_frame_temp)
        }
    })
-   # plot the run
+   # create a reactive to stream_frame that rolls it for the given series choice
+   stream_rolled<-reactive({
+       # create a function that limits the frame to only rows in the time window, 
+       timeroll<-function(i,df,roll_var,time_var='time', time_range=30){
+           # extract the time for that value of the given i
+           time<-df[i,][[time_var]]
+           # limit df to just rows within time range
+           temp_df<-df[df[[time_var]]>=time-time_range & df[[time_var]]<=time+time_range,]
+           # return the change in variable over change in time
+           return(weighted.mean(temp_df[[roll_var]],temp_df[['time_change']],na.rm=TRUE))
+       }
+       if(token_received()){
+           sp<-stream_frame()%>%
+               # convert to miles, minutes, calculate diffs
+               # mutate(miles = distance/1609.344,
+               #        miles_round = round(miles,2),
+               #        distance_change = distance-lag(distance),
+               #        miles_change = miles-lag(miles),
+               #        minutes = time/60,2,
+               #        time_change = time-lag(time),
+               #        pace = (distance_change*0.0372823/time_change)^(-1),
+               #        altitude_change = altitude-lag(altitude),
+               #        climb=altitude_change/time_change)%>%
+               filter(pace<15 & cadence>20)
+           # create rolled variable based on series choice
+           sp$pace_roll<-sapply(1:nrow(sp),function(x)timeroll(x,sp,"pace"))
+           sp$rolled<-sapply(1:nrow(sp),function(x)timeroll(x,sp,input$series_choice2))
+           sp$point_color<-sp[[input$series_choice2]]
+           return(sp)
+       }
+   })
+   # observer that removes heartrate from choices if its not in stream_frame
+   # observeEvent(input$run_choice,{
+   #     if(token_received()){
+   #         heart_stream<- content(get_stream(input$run_choice,'heartrate'))
+   #         # add heartrate as an option to series options if the user has heartrate info for at least one run
+   #         # THIS SHOULD BE REACTING TO STREAM_FRAME, BUT IT CAUSES AN ERROR WHENEVER THAT HAPPENS. THE CURRENT IMPLEMENTATION WILL CAUSE PROBLEMS IF heart_stream original_size is >30 but less than nrow(stream_frame) once stream_frame is populated
+   #         if(heart_stream$heartrate$original_size>30){
+   #             print(names(runs_frame))
+   #             series_options2<-c("Pace (min/mile)" = "pace",
+   #                                "Cadence" = "cadence",
+   #                                #"Heartrate" = "heartrate",
+   #                                "Vertical climb (m/s)" = "climb")
+   #             updateSelectInput(session,"series_choice2",choices = series_options2,selected="Pace (min/mile)")
+   #         }
+   #     }
+   #     })
+   # create a dictionary of color options based on the series chosen
+   pal_dict2<-c("pace" = "viridis",
+               "climb"="inferno",
+               "cadence"="plasma","heartrate"="magma")
+   #plot the run
    output$single_run<-renderPlot({
+       # create a function that limits the frame to only rows in the time window, 
+       # timeroll<-function(i,df,roll_var,time_var='time', time_range=30){
+       #     # extract the time for that value of the given i
+       #     time<-df[i,][[time_var]]
+       #     # limit df to just rows within time range
+       #     temp_df<-df[df[[time_var]]>=time-time_range & df[[time_var]]<=time+time_range,]
+       #     # return the change in variable over change in time
+       #     return(weighted.mean(temp_df[[roll_var]],temp_df[['time_change']],na.rm=TRUE))
+       # }
        if(token_received()){
            min_graph_pace=5
            max_graph_pace=15
-           smoothing = 50
-           sp<-stream_frame()%>%
-               # convert to miles, minutes, calculate diffs
-               mutate(miles = distance/1609.344,
-                      miles_round = round(miles,2),
-                      distance_change = distance-lag(distance),
-                      miles_change = miles-lag(miles),
-                      minutes = time/60,2,
-                      time_change = time-lag(time),
-                      pace = (distance_change*0.0372823/time_change)^(-1),
-                      altitude_change = altitude-lag(altitude),
-                      altitude_per_time=altitude_change/time_change)%>%
-               filter(pace<15)%>%
+           # plot sp
+           stream_rolled()%>%
                ggplot(aes(x=miles))+
-               geom_point(aes(x=miles,y=pace,color=altitude_per_time),alpha=.15)+
-               geom_line(aes(y=rollmean(pace,smoothing,na.pad=TRUE),color=rollmean(altitude_per_time,20,na.pad=TRUE),x=miles),size=2)+
+               geom_line(aes(y=pace_roll,color=rolled,x=miles),size=2)+
+               geom_point(aes(x=miles,y=pace,color=point_color),alpha=.15)+
                #theme_minimal()+
-               scale_color_viridis_c(option='inferno')+
+               scale_color_viridis_c(option=pal_dict2[[input$series_choice2]])+
                scale_y_continuous(limits=c(min_graph_pace,max_graph_pace*1.1),oob = rescale_none)+
                theme_gray()+
                theme(panel.background = element_rect(fill = "transparent",colour=NA),
@@ -352,8 +419,8 @@ server <- function(input, output, session) {
                      legend.position='bottom',
                      legend.key.width = unit(2, 'cm'),
                      legend.title = element_text(colour="white"))+
-               labs(x = 'mile',y='pace\n(min/mile)',color='vertical\nclimb (m/s)')
-           sp
+               labs(x = 'mile',y='pace\n(min/mile)',color=gsub(' (?=\\()','\n',input$series_choice2,perl=TRUE))
+           
            
            
        }
@@ -362,24 +429,49 @@ server <- function(input, output, session) {
    # create an observer for the leaflet map
    # get coordinates from api
    # # make geom_point dataframe
-   run_sf<-eventReactive(c(input$run_choice,token_received),{
-       if(token_received()){
-           stream_frame()%>%
-               filter(pace<20)%>%
-               mutate(altitude_roll=rollmean(altitude_change,50,na.pad=TRUE),
-                      pace_roll=rollmean(pace,50,na.pad=TRUE)
-               )%>%
-               st_as_sf(coords=c('lng','lat'))
-       }
-       })
+   # run_sf<-reactive({
+   #     # create a function that limits the frame to only rows in the time window, 
+   #     timeroll<-function(i,df,roll_var,time_var='time', time_range=30){
+   #         # extract the time for that value of the given i
+   #         time<-df[i,][[time_var]]
+   #         # limit df to just rows within time range
+   #         temp_df<-df[df[[time_var]]>=time-time_range & df[[time_var]]<=time+time_range,]
+   #         # return the change in variable over change in time
+   #         return(weighted.mean(temp_df[[roll_var]],temp_df[['time_change']],na.rm=TRUE))
+   #     }
+   #     if(token_received()){
+   #         temp_frame<-stream_frame()%>%
+   #             filter(pace<15 & cadence>20)%>%
+   #             mutate(altitude_roll=rollmean(altitude_change,50,na.pad=TRUE),
+   #                    pace_roll=rollmean(pace,50,na.pad=TRUE)
+   #                    )
+   #         # roll the selected choice variable
+   #         temp_frame$rolled<-sapply(1:nrow(temp_frame),function(x)timeroll(i,temp_frame,input$series_choice2))
+   #         temp_frame%>%
+   #             st_as_sf(coords=c('lng','lat'))
+   #             
+   #     }
+   #     })
    
    output$map<-renderLeaflet({
+       timeroll<-function(i,df,roll_var,time_var='time', time_range=30){
+           # extract the time for that value of the given i
+           time<-df[i,][[time_var]]
+           # limit df to just rows within time range
+           temp_df<-df[df[[time_var]]>=time-time_range & df[[time_var]]<=time+time_range,]
+           # return the change in variable over change in time
+           return(weighted.mean(temp_df[[roll_var]],temp_df[['time_change']],na.rm=TRUE))
+       }
+       
        if(token_received()){
-           min_stream<-min(run_sf()[['pace_roll']],na.rm=TRUE)
-           max_stream<-max(run_sf()[['pace_roll']],na.rm=TRUE)
+           sp<-stream_rolled()
+           min_stream<-round(min(sp$rolled,na.rm=TRUE),2)
+           max_stream<-round(max(sp$rolled,na.rm=TRUE),2)
+           print(min_stream)
+           print(max_stream)
            #min_stream<-5
            #max_stream<-15
-           pal<-colorNumeric("viridis",domain = c(min_stream,max_stream))
+           pal<-colorNumeric(pal_dict2[[input$series_choice2]],domain = c(min_stream,max_stream))
            # quick rounding function for popup
            roundif<-function(num){
                if(is.na(num)){
@@ -391,17 +483,18 @@ server <- function(input, output, session) {
            leaflet()%>%
                clearGroup('run')%>%
                addProviderTiles(providers$CartoDB.Positron)%>%
-               addCircleMarkers(data=run_sf(),
+               addCircleMarkers(data=sp%>%
+                                    st_as_sf(coords=c('lng','lat')),
                                 radius=.001,
                                 #fillOpacity = 0.1,
                                 opacity=.5,
-                                color = ~pal(pace_roll),
+                                color = ~pal(rolled),
                                 group='run')%>%
                clearGroup('legend')%>%
                addLegend("bottomleft",
                          pal = pal,
                          values = c(min_stream,max_stream),
-                         title='pace</br>(min/mile)',
+                         title=input$series_choice2,
                          opacity = 1,
                          group="legend")
            
